@@ -114,11 +114,27 @@ pub fn generic_fragment_drop<T: Drone + Send + 'static>() {
 
     // Client listens for packet from the drone (Dropped Nack)
     assert_eq!(c_recv.recv_timeout(TIMEOUT).unwrap(), nack_packet);
-    // SC listen for event from the drone
-    assert_eq!(
-        d_event_recv.recv_timeout(TIMEOUT).unwrap(),
-        DroneEvent::PacketDropped(msg)
-    );
+
+    // SC must receive a PacketSent (Nack from the drone) and a PacketDropped
+    let sc_res = DroneEvent::PacketDropped(msg);
+    let sc_res2 = DroneEvent::PacketSent(nack_packet);
+    for _ in 0..2 {
+        let res = d_event_recv.recv_timeout(TIMEOUT);
+        if res.is_err() {
+            panic!(
+                "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
+                res, sc_res, sc_res2
+            );
+        }
+        let res = res.unwrap();
+        assert!(
+            res == sc_res || res == sc_res2,
+            "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
+            res,
+            sc_res,
+            sc_res2
+        );
+    }
 }
 
 /// Checks if the packet is dropped by the second drone. The first drone has 0% PDR and the second one 100% PDR, otherwise the test will fail sometimes.
