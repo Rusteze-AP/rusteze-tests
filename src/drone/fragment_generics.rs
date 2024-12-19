@@ -7,6 +7,8 @@ use wg_internal::drone::Drone;
 use wg_internal::network::SourceRoutingHeader;
 use wg_internal::packet::{Fragment, Nack, NackType, Packet, PacketType};
 
+use crate::assert_matches_any;
+
 /* THE FOLLOWING TESTS CHECKS IF YOUR DRONE IS HANDLING CORRECTLY PACKETS (FRAGMENT) */
 
 const TIMEOUT: Duration = Duration::from_millis(400);
@@ -127,13 +129,7 @@ pub fn generic_fragment_drop<T: Drone + Send + 'static>() {
             );
         }
         let res = res.unwrap();
-        assert!(
-            res == sc_res || res == sc_res2,
-            "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
-            res,
-            sc_res,
-            sc_res2
-        );
+        assert_matches_any!(res, sc_res, sc_res2);
     }
 }
 

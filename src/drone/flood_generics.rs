@@ -7,6 +7,8 @@ use wg_internal::network::{NodeId, SourceRoutingHeader};
 use wg_internal::packet::{FloodRequest, FloodResponse, NodeType};
 use wg_internal::packet::{Packet, PacketType};
 
+use crate::assert_matches_any;
+
 const TIMEOUT: Duration = Duration::from_millis(400);
 
 fn create_sample_flood_req(flood_id: u64, path_trace: Vec<(NodeId, NodeType)>) -> Packet {
@@ -206,21 +208,9 @@ pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
 
     // d2 and d3 receive a flood request from d (containing the path trace)
     let res = c_recv.recv_timeout(TIMEOUT).unwrap();
-    assert!(
-        res == f_res12 || res == f_res13,
-        "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
-        res,
-        f_res12,
-        f_res13
-    );
+    assert_matches_any!(res, f_res12, f_res13);
     let res = c_recv.recv_timeout(TIMEOUT).unwrap();
-    assert!(
-        res == f_res12 || res == f_res13,
-        "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
-        res,
-        f_res12,
-        f_res13
-    );
+    assert_matches_any!(res, f_res12, f_res13);
 }
 
 pub fn generic_flood_res<T: Drone + Send + 'static>() {
