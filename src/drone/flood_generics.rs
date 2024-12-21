@@ -9,13 +9,15 @@ use wg_internal::packet::{Packet, PacketType};
 
 use crate::assert_matches_any;
 
+/* THE FOLLOWING TESTS CHECKS IF YOUR DRONE IS HANDLING CORRECTLY PACKETS (FLOOD REQUESTS/RESPONSES) */
+
 const TIMEOUT: Duration = Duration::from_millis(400);
 
-fn create_sample_flood_req(flood_id: u64, path_trace: Vec<(NodeId, NodeType)>) -> Packet {
+fn create_sample_flood_req(flood_id: u64, initiator_id : NodeId ,path_trace: Vec<(NodeId, NodeType)>) -> Packet {
     Packet {
         pack_type: PacketType::FloodRequest(FloodRequest {
             flood_id,
-            initiator_id: 1,
+            initiator_id,
             path_trace,
         }),
         routing_header: SourceRoutingHeader {
@@ -26,8 +28,11 @@ fn create_sample_flood_req(flood_id: u64, path_trace: Vec<(NodeId, NodeType)>) -
     }
 }
 
-fn create_flood_res(flood_id: u64, path_trace: Vec<(NodeId, NodeType)>) -> Packet {
-    let routing_header = SourceRoutingHeader::new(vec![1, 2, 3], 1);
+fn create_flood_res(
+    flood_id: u64,
+    path_trace: Vec<(NodeId, NodeType)>,
+    routing_header: SourceRoutingHeader,
+) -> Packet {
     let flood_res = FloodResponse {
         flood_id,
         path_trace,
@@ -35,17 +40,19 @@ fn create_flood_res(flood_id: u64, path_trace: Vec<(NodeId, NodeType)>) -> Packe
     Packet::new_flood_response(routing_header, 1, flood_res)
 }
 
-/// This function checks whether a drone builds a flood response packet correctly.
+/// This function checks whether a drone builds a flood response packet correctly when drone has no neighbours (except for the receiver).
 pub fn generic_new_flood<T: Drone + Send + 'static>() {
     // Client 1
     let (c_send, c_recv) = unbounded::<Packet>();
     // Drone 11
     let (d_send, d_recv) = unbounded();
+    // SC commands
     let (_d_command_send, d_command_recv) = unbounded();
+    let (d_event_send, _d_event_recv) = unbounded();
 
     let mut drone = T::new(
         11,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv,
         d_recv.clone(),
         HashMap::from([(1, c_send.clone())]),
@@ -56,36 +63,34 @@ pub fn generic_new_flood<T: Drone + Send + 'static>() {
         drone.run();
     });
 
-    let msg = create_sample_flood_req(1, vec![(1, NodeType::Client)]);
+    let msg = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
     // Client sends packet to d
     d_send.send(msg.clone()).unwrap();
 
-    let flood_res = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![(1, NodeType::Client), (11, NodeType::Drone)],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 1,
-            hops: vec![11, 1],
-        },
-        session_id: 1,
-    };
-
+    let flood_res = create_flood_res(
+        1,
+        vec![(1, NodeType::Client), (11, NodeType::Drone)],
+        SourceRoutingHeader::new(vec![11, 1], 1),
+    );
     // Client receive a flood response originated from 'd'
     assert_eq!(c_recv.recv_timeout(TIMEOUT).unwrap(), flood_res);
 }
 
+/// This functions checks if a drone handles correctly a flood request when:
+/// - the drone has no neighbours (except for the receiver)
+/// - the `initiator_id` has not been included into the path trace.
 pub fn generic_new_flood_no_initiator<T: Drone + Send + 'static>() {
     // Client 1
     let (c_send, c_recv) = unbounded::<Packet>();
     // Drone 11
     let (d_send, d_recv) = unbounded();
+    // SC commands
     let (_d_command_send, d_command_recv) = unbounded();
+    let (d_event_send, _d_event_recv) = unbounded();
 
     let mut drone = T::new(
         11,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv,
         d_recv.clone(),
         HashMap::from([(1, c_send.clone())]),
@@ -96,34 +101,35 @@ pub fn generic_new_flood_no_initiator<T: Drone + Send + 'static>() {
         drone.run();
     });
 
-    let msg = create_sample_flood_req(1, vec![]);
+    let msg = create_sample_flood_req(1, 1, vec![]);
     // Client sends packet to d
     d_send.send(msg.clone()).unwrap();
 
-    let flood_res = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![(11, NodeType::Drone)],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 1,
-            hops: vec![11, 1],
-        },
-        session_id: 1,
-    };
+    let flood_res = create_flood_res(
+        1,
+        vec![(11, NodeType::Drone)],
+        SourceRoutingHeader::new(vec![11, 1], 1),
+    );
 
     // Client receive a flood response originated from 'd'
     assert_eq!(c_recv.recv_timeout(TIMEOUT).unwrap(), flood_res);
 }
 
 /// This function checks if a flood request is forwarded to all neighbours of a drone (excluding the sender) and waits for 2 responses.
+/// ### Network Topology
+/// C(1) -> D(11)
+/// D(11) -> C(1), D(12), D(13)
+/// D(12) -> D(11)
+/// D(13) -> D(11)
 pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
     let (c_send, c_recv) = unbounded::<Packet>();
     let (d_send, d_recv) = unbounded();
     let (d2_send, d2_recv) = unbounded::<Packet>();
     let (d3_send, d3_recv) = unbounded::<Packet>();
+    // SC commands
     let (_d_command_send, d_command_recv) = unbounded();
-
+    let (d_event_send, _d_event_recv) = unbounded();
+        
     let neighbours = HashMap::from([
         (1, c_send.clone()),
         (12, d2_send.clone()),
@@ -131,7 +137,7 @@ pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
     ]);
     let mut drone = T::new(
         11,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv.clone(),
         d_recv.clone(),
         neighbours,
@@ -145,7 +151,7 @@ pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
     let neighbours = HashMap::from([(11, d_send.clone())]);
     let mut drone2 = T::new(
         12,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv.clone(),
         d2_recv.clone(),
         neighbours,
@@ -159,7 +165,7 @@ pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
     let neighbours = HashMap::from([(11, d_send.clone())]);
     let mut drone3 = T::new(
         13,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv.clone(),
         d3_recv.clone(),
         neighbours,
@@ -170,57 +176,54 @@ pub fn generic_new_flood_neighbours<T: Drone + Send + 'static>() {
         drone3.run();
     });
 
-    let msg = create_sample_flood_req(1, vec![(1, NodeType::Client)]);
+    let msg = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
     // Client sends packet to d
     d_send.send(msg.clone()).unwrap();
 
-    let f_res12 = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![
-                (1, NodeType::Client),
-                (11, NodeType::Drone),
-                (12, NodeType::Drone),
-            ],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 2,
-            hops: vec![12, 11, 1],
-        },
-        session_id: 1,
-    };
+    let flood_res_d12 = create_flood_res(
+        1,
+        vec![
+            (1, NodeType::Client),
+            (11, NodeType::Drone),
+            (12, NodeType::Drone),
+        ],
+        SourceRoutingHeader::new(vec![12, 11, 1], 2),
+    );
+    let flood_res_d13 = create_flood_res(
+        1,
+        vec![
+            (1, NodeType::Client),
+            (11, NodeType::Drone),
+            (13, NodeType::Drone),
+        ],
+        SourceRoutingHeader::new(vec![13, 11, 1], 2),
+    );
 
-    let f_res13 = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![
-                (1, NodeType::Client),
-                (11, NodeType::Drone),
-                (13, NodeType::Drone),
-            ],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 2,
-            hops: vec![13, 11, 1],
-        },
-        session_id: 1,
-    };
-
-    // d2 and d3 receive a flood request from d (containing the path trace)
-    let res = c_recv.recv_timeout(TIMEOUT).unwrap();
-    assert_matches_any!(res, f_res12, f_res13);
-    let res = c_recv.recv_timeout(TIMEOUT).unwrap();
-    assert_matches_any!(res, f_res12, f_res13);
+    // Client receive 2 flood responses originated from `d12` and `d13`
+    for _ in 0..2 {
+        let res = c_recv.recv_timeout(TIMEOUT);
+        if res.is_err() {
+            panic!(
+                "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
+                res, flood_res_d12, flood_res_d13
+            );
+        }
+        let res = res.unwrap();
+        assert_matches_any!(res, flood_res_d12, flood_res_d13);
+    }
 }
 
-pub fn generic_flood_res<T: Drone + Send + 'static>() {
+/// This function checks if a drone forwards correctly a flood response packet to the next hop.
+pub fn generic_flood_res_forward<T: Drone + Send + 'static>() {
     let (d2_send, d2_recv) = unbounded();
     let (d3_send, d3_recv) = unbounded();
+    // SC commands
     let (_d_command_send, d_command_recv) = unbounded();
+    let (d_event_send, _d_event_recv) = unbounded();
 
     let mut drone_2 = T::new(
         2,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv,
         d2_recv,
         HashMap::from([(3, d3_send.clone())]),
@@ -231,7 +234,11 @@ pub fn generic_flood_res<T: Drone + Send + 'static>() {
         drone_2.run();
     });
 
-    let mut flood_res = create_flood_res(1, vec![(1, NodeType::Client), (11, NodeType::Drone)]);
+    let mut flood_res = create_flood_res(
+        1,
+        vec![(1, NodeType::Client), (11, NodeType::Drone)],
+        SourceRoutingHeader::new(vec![1, 2, 3], 1),
+    );
     d2_send.send(flood_res.clone()).unwrap();
 
     flood_res.routing_header.hop_index += 1;
@@ -239,6 +246,9 @@ pub fn generic_flood_res<T: Drone + Send + 'static>() {
     assert_eq!(d3_recv.recv_timeout(TIMEOUT).unwrap(), flood_res);
 }
 
+/// This functions checks if a drone handles correctly a flood request when the `flood_id` and the `initiator_id` are known.
+/// ### Network Topology
+/// C(1) -> D(11) -> D(12)
 pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
     // Client 1
     let (c_send, c_recv) = unbounded::<Packet>();
@@ -246,11 +256,13 @@ pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
     let (d_send, d_recv) = unbounded();
     // Drone 12
     let (d12_send, d12_recv) = unbounded();
+    // SC commands
     let (_d_command_send, d_command_recv) = unbounded();
+    let (d_event_send, _d_event_recv) = unbounded();
 
     let mut drone = T::new(
         11,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv.clone(),
         d_recv.clone(),
         HashMap::from([(1, c_send.clone()), (12, d12_send.clone())]),
@@ -259,7 +271,7 @@ pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
 
     let mut drone2 = T::new(
         12,
-        unbounded().0,
+        d_event_send.clone(),
         d_command_recv.clone(),
         d12_recv.clone(),
         HashMap::from([(11, d_send.clone())]),
@@ -273,40 +285,33 @@ pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
         drone2.run();
     });
 
-    let msg = create_sample_flood_req(1, vec![(1, NodeType::Client)]);
+    let msg = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
     // Client sends packet to d
     d_send.send(msg.clone()).unwrap();
     thread::sleep(Duration::from_millis(300));
     d_send.send(msg.clone()).unwrap();
 
-    let flood_res_1 = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![(1, NodeType::Client), (11, NodeType::Drone)],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 1,
-            hops: vec![11, 1],
-        },
-        session_id: 1,
-    };
+    let flood_res_d11 = create_flood_res(
+        1,
+        vec![(1, NodeType::Client), (11, NodeType::Drone)],
+        SourceRoutingHeader::new(vec![11, 1], 1),
+    );
 
-    let flood_res_2 = Packet {
-        pack_type: PacketType::FloodResponse(FloodResponse {
-            flood_id: 1,
-            path_trace: vec![
-                (1, NodeType::Client),
-                (11, NodeType::Drone),
-                (12, NodeType::Drone),
-            ],
-        }),
-        routing_header: SourceRoutingHeader {
-            hop_index: 2,
-            hops: vec![12, 11, 1],
-        },
-        session_id: 1,
-    };
-
-    assert_eq!(c_recv.recv_timeout(TIMEOUT).unwrap(), flood_res_2);
-    assert_eq!(c_recv.recv_timeout(TIMEOUT).unwrap(), flood_res_1);
+    let flood_res_d12 = create_flood_res(
+        1,
+        vec![(1, NodeType::Client), (11, NodeType::Drone), (12, NodeType::Drone)],
+        SourceRoutingHeader::new(vec![12, 11, 1], 2),
+    );
+    
+    for _ in 0..2 {
+        let res = c_recv.recv_timeout(TIMEOUT);
+        if res.is_err() {
+            panic!(
+                "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
+                res, flood_res_d11, flood_res_d12
+            );
+        }
+        let res = res.unwrap();
+        assert_matches_any!(res, flood_res_d11, flood_res_d12);
+    }
 }
