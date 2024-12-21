@@ -236,7 +236,7 @@ pub fn generic_flood_res_forward<T: Drone + Send + 'static>() {
 
     let mut flood_res = create_flood_res(
         1,
-        vec![(1, NodeType::Client), (11, NodeType::Drone)],
+        vec![(1, NodeType::Client), (2, NodeType::Drone)],
         SourceRoutingHeader::new(vec![1, 2, 3], 1),
     );
     d2_send.send(flood_res.clone()).unwrap();
@@ -246,9 +246,11 @@ pub fn generic_flood_res_forward<T: Drone + Send + 'static>() {
     assert_eq!(d3_recv.recv_timeout(TIMEOUT).unwrap(), flood_res);
 }
 
-/// This functions checks if a drone handles correctly a flood request when the `flood_id` and the `initiator_id` are known.
+/// This function checks if a drone handles correctly a flood request when the `flood_id` and the `initiator_id` are known.
 /// ### Network Topology
-/// C(1) -> D(11) -> D(12)
+/// C(1) -> D(11) 
+/// C(2) -> D(11)
+/// D(11) -> C(1), C(2), D(12)
 pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
     // Client 1
     let (c_send, c_recv) = unbounded::<Packet>();
@@ -313,5 +315,53 @@ pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
         }
         let res = res.unwrap();
         assert_matches_any!(res, flood_res_d11, flood_res_d12);
+    }
+}
+
+/// This function checks if a drone handles correctly two flood requests with the same `flood_id` but different `initiator_id`.
+/// ### Network Topology
+/// C(1) -> D(11) -> D(12)
+pub fn generic_flood_req_two_initiator<T: Drone + Send + 'static>() {
+    let (d11_send, d11_recv) = unbounded();
+    let (d12_send, d12_recv) = unbounded();
+    // SC commands
+    let (_d_command_send, d_command_recv) = unbounded();
+    let (d_event_send, _d_event_recv) = unbounded();
+
+    let mut drone = T::new(
+        11,
+        d_event_send.clone(),
+        d_command_recv,
+        d11_recv,
+        HashMap::from([(12, d12_send.clone())]),
+        0.0,
+    );
+
+    thread::spawn(move || {
+        drone.run();
+    });
+
+    // Client(1) sends a flood request to drone(11) with flood_id = 1 and initiator_id = 1
+    let mut msg_c1 = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
+    d11_send.send(msg_c1.clone()).unwrap();
+
+    // Client(2) sends a flood request to drone(11) with flood_id = 1 and initiator_id = 2
+    let mut msg_c2 = create_sample_flood_req(1, 2, vec![(2, NodeType::Client)]);
+    d11_send.send(msg_c2.clone()).unwrap();
+
+    // Drone(12) receives two flood requests with Drone(11) added to the path trace
+    let expected_d12 = create_sample_flood_req(1, 1, vec![(1, NodeType::Client), (11, NodeType::Drone)]);
+    let expected_d12_2 = create_sample_flood_req(1, 2, vec![(2, NodeType::Client), (11, NodeType::Drone)]);
+
+    for _ in 0..2 {
+        let res = d12_recv.recv_timeout(TIMEOUT);
+        if res.is_err() {
+            panic!(
+                "assertion `left == right` failed:\nleft: `{:?}`\nright1: `{:?}`\nright2: `{:?}`",
+                res, expected_d12, expected_d12_2
+            );
+        }
+        let res = res.unwrap();
+        assert_matches_any!(res, expected_d12, expected_d12_2);
     }
 }
