@@ -322,6 +322,10 @@ pub fn generic_known_flood_req<T: Drone + Send + 'static>() {
 /// ### Network Topology
 /// C(1) -> D(11) -> D(12)
 pub fn generic_flood_req_two_initiator<T: Drone + Send + 'static>() {
+    // Client 1 & 2
+    let (c1_send, _c1_recv) = unbounded();
+    let (c2_send, _c2_recv) = unbounded();
+    // Drone 11 & 12
     let (d11_send, d11_recv) = unbounded();
     let (d12_send, d12_recv) = unbounded();
     // SC commands
@@ -333,7 +337,7 @@ pub fn generic_flood_req_two_initiator<T: Drone + Send + 'static>() {
         d_event_send.clone(),
         d_command_recv,
         d11_recv,
-        HashMap::from([(12, d12_send.clone())]),
+        HashMap::from([(1, c1_send.clone()), (2, c2_send.clone()), (12, d12_send.clone())]),
         0.0,
     );
 
@@ -342,11 +346,11 @@ pub fn generic_flood_req_two_initiator<T: Drone + Send + 'static>() {
     });
 
     // Client(1) sends a flood request to drone(11) with flood_id = 1 and initiator_id = 1
-    let mut msg_c1 = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
+    let msg_c1 = create_sample_flood_req(1, 1, vec![(1, NodeType::Client)]);
     d11_send.send(msg_c1.clone()).unwrap();
 
     // Client(2) sends a flood request to drone(11) with flood_id = 1 and initiator_id = 2
-    let mut msg_c2 = create_sample_flood_req(1, 2, vec![(2, NodeType::Client)]);
+    let msg_c2 = create_sample_flood_req(1, 2, vec![(2, NodeType::Client)]);
     d11_send.send(msg_c2.clone()).unwrap();
 
     // Drone(12) receives two flood requests with Drone(11) added to the path trace
